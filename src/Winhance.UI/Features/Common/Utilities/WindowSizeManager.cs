@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.UI.Windowing;
 using Winhance.Core.Features.Common.Constants;
@@ -141,9 +140,8 @@ public class WindowSizeManager
             if (!double.IsNaN(left) && !double.IsNaN(top))
             {
                 var savedRect = new RectInt32((int)left, (int)top, w, h);
-                var workAreas = DisplayArea.FindAll().Select(d => d.WorkArea);
 
-                if (IsWindowRectVisible(savedRect, workAreas))
+                if (IsSavedPositionVisibleOnAnyDisplay(savedRect))
                 {
                     _appWindow.MoveAndResize(savedRect);
                 }
@@ -173,7 +171,37 @@ public class WindowSizeManager
         }
         catch (Exception ex)
         {
-            _logService.Log(LogLevel.Error, $"Failed to load window settings: {ex.Message}");
+            _logService.Log(LogLevel.Error, $"Failed to load window settings ({ex.GetType().FullName}): {ex.Message}");
+            if (ex.InnerException != null)
+                _logService.Log(LogLevel.Error, $"Inner exception: {ex.InnerException.GetType().FullName}: {ex.InnerException.Message}");
+            _logService.Log(LogLevel.Error, $"Stack trace: {ex.StackTrace}");
+            return false;
+        }
+    }
+
+    // Enumerates displays and runs the visibility check. Isolated so a failure
+    // inside the WinUI DisplayArea APIs (which can throw in obscure COM-interop
+    // scenarios during early startup) can't take down the whole load path —
+    // if we can't enumerate displays, assume the saved position might be stale
+    // and recenter, which matches the safe behavior for issue #585.
+    private bool IsSavedPositionVisibleOnAnyDisplay(RectInt32 savedRect)
+    {
+        try
+        {
+            var displays = DisplayArea.FindAll();
+            var workAreas = new List<RectInt32>(displays.Count);
+            for (int i = 0; i < displays.Count; i++)
+            {
+                workAreas.Add(displays[i].WorkArea);
+            }
+
+            return IsWindowRectVisible(savedRect, workAreas);
+        }
+        catch (Exception ex)
+        {
+            _logService.Log(
+                LogLevel.Warning,
+                $"Could not enumerate displays to validate window position ({ex.GetType().FullName}: {ex.Message}); treating saved position as invalid and re-centering.");
             return false;
         }
     }
