@@ -23,9 +23,9 @@ namespace Winhance.UI.Features.Common.Helpers;
 ///
 /// Guards: we do NOT handle the key when the focused element is inside a control
 /// that should own its own paging (open ComboBox popup, AutoSuggestBox with its
-/// suggestion list open, multi-line TextBox, or a nested ScrollViewer/ScrollView
-/// other than the host we were asked to scroll). In those cases we let the event
-/// bubble untouched.
+/// suggestion list open, multi-line TextBox, or an enabled nested
+/// ScrollViewer/ScrollView other than the host we were asked to scroll). In those
+/// cases we let the event bubble untouched.
 /// </summary>
 internal static class PageScrollHelper
 {
@@ -39,43 +39,22 @@ internal static class PageScrollHelper
     /// Attaches fast-scroll handling to <paramref name="keyEventSource"/> for the
     /// given <paramref name="scrollView"/>.
     ///
-    /// Why PreviewKeyDown: the inner ListView's built-in key handling reacts to
-    /// PageUp/PageDown by moving focus to the first/last item in the viewport,
-    /// which raises <c>BringIntoViewRequested</c> and makes the outer ScrollView
-    /// jump to the top/bottom — the exact emergent behavior we're trying to
-    /// replace. A bubbling (KeyDown) handler would see the event only AFTER
-    /// the ListView has already performed that focus change, so by then it's
-    /// too late to prevent the jump. PreviewKeyDown tunnels root → target, so
-    /// we can set <c>e.Handled = true</c> before the ListView's own key handler
-    /// gets a chance to run.
-    ///
-    /// We also keep a bubbling KeyDown handler with <c>handledEventsToo: true</c>
-    /// as a belt-and-braces fallback for guard paths (e.g. nested ScrollViewer)
-    /// where Preview returns without handling — but in practice the Preview path
-    /// is what does the real work.
+    /// The inner ListView's built-in KeyDown reacts to PageUp/PageDown by moving
+    /// focus to the first/last visible item, which raises
+    /// <c>BringIntoViewRequested</c> and makes the outer ScrollView jump to the
+    /// extreme. PreviewKeyDown tunnels root → target, so we can set
+    /// <c>e.Handled = true</c> before the ListView's own handler runs. A bubbling
+    /// KeyDown subscription stays as a belt-and-braces fallback.
     /// </summary>
-    /// <param name="keyEventSource">
-    /// The element whose <c>PreviewKeyDown</c>/<c>KeyDown</c> events we subscribe
-    /// to. Typically the Page or UserControl root, so the handler sees keys
-    /// regardless of which descendant has focus.
-    /// </param>
-    /// <param name="scrollView">The outer <see cref="ScrollView"/> to scroll.</param>
     public static void Attach(UIElement keyEventSource, ScrollView scrollView)
     {
         if (keyEventSource == null || scrollView == null) return;
 
-        // Tunneling handler — fires BEFORE any descendant's KeyDown. This is how
-        // we stop the ListView from converting PageUp/PageDown into
-        // first-item/last-item focus traversal (which would otherwise scroll
-        // the outer ScrollView to the top/bottom via BringIntoViewRequested).
         keyEventSource.AddHandler(
             UIElement.PreviewKeyDownEvent,
             new KeyEventHandler((s, e) => HandleKey(scrollView, e)),
             handledEventsToo: true);
 
-        // Bubbling fallback — covers the case where focus is on the ScrollView
-        // itself (or another element that doesn't route through the preview
-        // chain as we expect) and the key would otherwise be unhandled.
         keyEventSource.AddHandler(
             UIElement.KeyDownEvent,
             new KeyEventHandler((s, e) => HandleKey(scrollView, e)),
@@ -95,7 +74,6 @@ internal static class PageScrollHelper
         if (ShouldSkipForFocusedElement(e.OriginalSource as DependencyObject, scrollView))
             return;
 
-        // Nothing to scroll — don't consume the key.
         if (scrollView.ScrollableHeight <= 0) return;
 
         var options = new ScrollingScrollOptions(ScrollingAnimationMode.Disabled);
@@ -124,10 +102,6 @@ internal static class PageScrollHelper
         }
     }
 
-    /// <summary>
-    /// True for the four keys this helper intercepts.
-    /// Exposed for unit testing.
-    /// </summary>
     internal static bool IsPagingKey(VirtualKey key) =>
         key == VirtualKey.PageUp ||
         key == VirtualKey.PageDown ||
@@ -137,32 +111,33 @@ internal static class PageScrollHelper
     /// <summary>
     /// Returns true if the focused element (or any ancestor up to, but not
     /// including, <paramref name="scrollViewHost"/>) is a control that should
-    /// own its own paging behavior. Walking the tree — rather than just checking
-    /// the immediate focused element — is important because focus typically sits
-    /// on a small inner control (e.g. the editable TextBox inside an
-    /// AutoSuggestBox) rather than the container.
+    /// own its own paging behavior.
+    ///
+    /// A nested scroller only "owns the key" if it's actually scrollable — a
+    /// ListView's internal template ScrollViewer with vertical scrolling disabled
+    /// (the exact pattern SettingsListView uses, see the attached
+    /// <c>ScrollViewer.VerticalScrollMode="Disabled"</c>) must NOT block us:
+    /// otherwise every key press gets swallowed by that inert scroller and our
+    /// outer ScrollView never sees the event.
     /// </summary>
-    /// <param name="focused">The focused element (typically <c>e.OriginalSource</c>).</param>
-    /// <param name="scrollViewHost">
-    /// The ScrollView we were asked to scroll. Any ScrollViewer/ScrollView we
-    /// encounter on the way up that isn't this host means a nested scroller
-    /// owns the key.
-    /// </param>
     internal static bool ShouldSkipForFocusedElement(DependencyObject? focused, ScrollView scrollViewHost)
     {
         for (var current = focused; current != null; current = VisualTreeHelper.GetParent(current))
         {
-            // Nested scroll host — let it handle its own paging.
-            if (current is ScrollViewer) return true;
-            if (current is ScrollView sv && !ReferenceEquals(sv, scrollViewHost)) return true;
+            // Classic ScrollViewer — skip past it if vertical scrolling is disabled.
+            if (current is ScrollViewer svr && svr.VerticalScrollMode != ScrollMode.Disabled)
+                return true;
 
-            // ComboBox (and our ComboBoxEx subclass) with dropdown open.
+            // WinUI 3 ScrollView — same deal, and don't claim the host as "nested".
+            if (current is ScrollView sv
+                && !ReferenceEquals(sv, scrollViewHost)
+                && sv.VerticalScrollMode != ScrollingScrollMode.Disabled)
+                return true;
+
             if (current is ComboBox combo && combo.IsDropDownOpen) return true;
 
-            // AutoSuggestBox with suggestion list open.
             if (current is AutoSuggestBox asb && asb.IsSuggestionListOpen) return true;
 
-            // Multi-line TextBox — PageUp/PageDown move the caret between lines there.
             if (current is TextBox tb && (tb.AcceptsReturn || tb.TextWrapping != TextWrapping.NoWrap))
                 return true;
         }
