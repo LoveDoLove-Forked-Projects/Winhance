@@ -46,15 +46,17 @@ public class NewBadgeService : INewBadgeService
             }
         }
 
-        var storedHighestStr = _prefs.GetPreference(
-            UserPreferenceKeys.HighestSeenAddedInVersion, "");
+        var storedHighestStr  = _prefs.GetPreference(UserPreferenceKeys.HighestSeenAddedInVersion, "");
+        var storedBaselineStr = _prefs.GetPreference("NewBadgeBaseline", "");
 
-        // Branch A: no HighestSeenAddedInVersion stored — either a first-ever install or
-        // a returning user whose preferences predate the badge system. Both get the same
-        // treatment: baseline = 0.0.0 so every tagged setting shows as NEW. Without this,
-        // a first-install user would see no badges at all and the View menu's NEW toggle
-        // would appear inert.
-        if (string.IsNullOrEmpty(storedHighestStr))
+        // Branch A: uninitialized state — first-ever install, returning user whose
+        // preferences predate the badge system, OR a half-populated state where one
+        // of the two keys is missing (or unparseable). All roads lead to: baseline =
+        // 0.0.0, every tagged setting renders as NEW, both keys get seeded so the
+        // next launch has a consistent pair.
+        var highestOk  = TryParseVersion(storedHighestStr,  out var storedHighest);
+        var baselineOk = TryParseVersion(storedBaselineStr, out var storedBaseline);
+        if (!highestOk || !baselineOk)
         {
             _baseline = new Version(0, 0, 0);
             if (highestInRegistry is not null)
@@ -66,33 +68,28 @@ public class NewBadgeService : INewBadgeService
             _prefs.SetPreferenceAsync("NewBadgeBaseline", VersionToString(_baseline));
             // Do NOT touch ShowNewBadges — leave whatever the user already has.
             _logService.LogInformation(
-                "[NewBadge] No stored HighestSeenAddedInVersion. Baseline set to 0.0.0 (all tagged settings treated as new).");
+                "[NewBadge] Uninitialized or half-populated state. Baseline set to 0.0.0 (all tagged settings treated as new).");
             return;
         }
 
-        var stored = TryParseVersion(storedHighestStr, out var s) ? s : new Version(0, 0, 0);
-
         // Branch B: effective upgrade detected — new settings added to the registry since last run.
-        if (highestInRegistry is not null && highestInRegistry > stored)
+        if (highestInRegistry is not null && highestInRegistry > storedHighest)
         {
-            _baseline = stored;
+            _baseline = storedHighest;
             _prefs.SetPreferenceAsync(
                 UserPreferenceKeys.HighestSeenAddedInVersion,
                 VersionToString(highestInRegistry));
-            _prefs.SetPreferenceAsync("NewBadgeBaseline", VersionToString(stored));
+            _prefs.SetPreferenceAsync("NewBadgeBaseline", VersionToString(storedHighest));
             ShowNewBadges = true;
             _logService.LogInformation(
-                $"[NewBadge] Effective upgrade: registry highest {highestInRegistry} > stored {stored}. " +
-                $"Baseline={stored}; ShowNewBadges reset to true.");
+                $"[NewBadge] Effective upgrade: registry highest {highestInRegistry} > stored {storedHighest}. " +
+                $"Baseline={storedHighest}; ShowNewBadges reset to true.");
             return;
         }
 
         // Branch C: no upgrade since last run — use the stored NewBadgeBaseline so NEW
-        // badges persist across app launches until the next upgrade. Falling back to
-        // `stored` would advance the baseline every run and hide badges immediately
-        // after the first post-upgrade launch.
-        var storedBaselineStr = _prefs.GetPreference("NewBadgeBaseline", "");
-        _baseline = TryParseVersion(storedBaselineStr, out var b) ? b : stored;
+        // badges persist across app launches until the next upgrade.
+        _baseline = storedBaseline;
         _logService.LogDebug(
             $"[NewBadge] No upgrade. Baseline={_baseline}, ShowNewBadges={ShowNewBadges}.");
     }
